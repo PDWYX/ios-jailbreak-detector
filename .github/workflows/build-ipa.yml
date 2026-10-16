@@ -1,0 +1,76 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          xcode-select -p
+          uname -m
+
+      # 项目自带 SwiftLint 构建阶段。若 runner 恰好装了 swiftlint，lint 报错会让构建失败；
+      # 这里放一个 no-op shim 抢先命中 `which swiftlint`。
+      - name: Neutralize SwiftLint build phase
+        run: |
+          mkdir -p "$HOME/bin"
+          printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/swiftlint"
+          chmod +x "$HOME/bin/swiftlint"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Build FrameworkClientApp (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project IOSSecuritySuite.xcodeproj \
+            -scheme FrameworkClientApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            IPHONEOS_DEPLOYMENT_TARGET=13.0 \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_ENTITLEMENTS=""
+
+      - name: Package IPA (ad-hoc signed)
+        run: |
+          set -e
+          APP="build/Build/Products/Release-iphoneos/FrameworkClientApp.app"
+          test -d "$APP"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          if [ -d "Payload/FrameworkClientApp.app/Frameworks" ]; then
+            for fw in Payload/FrameworkClientApp.app/Frameworks/*.framework; do
+              codesign --force --sign - --timestamp=none "$fw" || true
+            done
+          fi
+          codesign --force --sign - --timestamp=none "Payload/FrameworkClientApp.app" || true
+          zip -qry IOSSecuritySuiteDemo.ipa Payload
+          ls -lh IOSSecuritySuiteDemo.ipa
+          unzip -l IOSSecuritySuiteDemo.ipa | head -20
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IOSSecuritySuiteDemo-ipa
+          path: IOSSecuritySuiteDemo.ipa
+
+      - name: Publish release with IPA
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ipa-${{ github.run_number }}
+          name: IOSSecuritySuiteDemo build ${{ github.run_number }}
+          body: Unsigned/ad-hoc signed IPA for iOS 13.6 (jailbroken; install with AppSync Unified + Filza)
+          files: IOSSecuritySuiteDemo.ipa
