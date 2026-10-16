@@ -109,8 +109,18 @@ private func readSleb128(ptr: inout UnsafeMutablePointer<UInt8>, end: UnsafeMuta
 }
 
 internal class FishHookChecker {
+  // Chatbox patch: the original implementation walks the __LINKEDIT bind opcode
+  // stream of every loaded image. Under a jailbreak (libhooker / TweakInject /
+  // pspawn_payload inject arm64e images with an unexpected bind layout) that walk
+  // runs out of bounds and hits a Swift trap -> EXC_BREAKPOINT (brk #1), which
+  // kills the host process (e.g. IOSSecuritySuite.amIRuntimeHooked).
+  // This routine is only "anti-fishhook self protection"; it changes no detection
+  // result, so it is disabled by default.
+  static let isFishHookDenyEnabled = false
+
   @inline(__always)
   static func denyFishHook(_ symbol: String) {
+    guard isFishHookDenyEnabled else { return }
     for imgIndex in 0..<_dyld_image_count() {
       if let image = _dyld_get_image_header(imgIndex) {
         denyFishHook(symbol, at: image, imageSlide: _dyld_get_image_vmaddr_slide(imgIndex))
